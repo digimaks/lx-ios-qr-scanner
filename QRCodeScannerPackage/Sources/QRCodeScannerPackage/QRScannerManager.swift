@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: EUPL-1.2
-
 //
 //  QRScannerManager.swift
 //  QRCodeScannerPackage
@@ -15,56 +13,90 @@ import UIKit
 @MainActor final public class QRScannerManager: NSObject, Sendable {
     
     @MainActor fileprivate let captureSession: AVCaptureSession = AVCaptureSession()
+    fileprivate let sessionQueue = DispatchQueue(label: "QRCodeScannerManager.sessionQueue")
+    fileprivate let sessionQueueKey = DispatchSpecificKey<Void>()
     fileprivate var previewLayer: AVCaptureVideoPreviewLayer?
     fileprivate var focusImageView: UIImageView?
     fileprivate var closeButton: UIButton?
     public static let shared = QRScannerManager()
     
+    public override init() {
+        super.init()
+        sessionQueue.setSpecific(key: sessionQueueKey, value: ())
+    }
+    
     public weak var delegate: QRCodeActionDelegate?
     
     fileprivate var needCallback: Bool = true
-
+    
     public func runSession(for parent: UIViewController) {
         needCallback = true
         self.addLayer(for: parent)
-        DispatchQueue.global(qos: .background).async {
-            Task { @MainActor in
-                self.captureSession.startRunning()
+        let session = self.captureSession
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+            session.startRunning()
+            DispatchQueue.main.async {
                 self.addViewFinder(parent: parent)
             }
         }
     }
-    
     public func stopSession() {
-        self.captureSession.stopRunning()
-        self.removeLayer()
+        let session = self.captureSession
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+            if session.isRunning {
+                session.stopRunning()
+            }
+            DispatchQueue.main.async {
+                self.removeLayer()
+            }
+        }
     }
     
-    public func setUp() {
-        guard let device = AVCaptureDevice.default(for: .video) else { return }
-            
-            do {
-                let input = try AVCaptureDeviceInput(device: device)
-                
-                let output = AVCaptureMetadataOutput()
-
-                output.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
-                
-                if captureSession.canAddInput(input) {
-                    captureSession.addInput(input)
+    public func setUp(completion: @escaping (Bool) -> Void) {
+        self.requestCameraAccess(completion: { granted in
+            if granted {
+                guard let device = AVCaptureDevice.default(for: .video) else {
+                    DispatchQueue.main.async { completion(false) }
+                    return
                 }
                 
-                if captureSession.canAddOutput(output) {
-                    captureSession.addOutput(output)
-                    output.metadataObjectTypes = [.qr]
+                do {
+                    let input = try AVCaptureDeviceInput(device: device)
+                    let output = AVCaptureMetadataOutput()
+                    output.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
+                    
+                    self.sessionQueue.async {
+                        let session = self.captureSession
+                        session.beginConfiguration()
+                        
+                        if session.canAddInput(input) {
+                            session.addInput(input)
+                        }
+                        
+                        if session.canAddOutput(output) {
+                            session.addOutput(output)
+                            output.metadataObjectTypes = [.qr]
+                        }
+                        
+                        session.commitConfiguration()
+                        
+                        DispatchQueue.main.async {
+                            completion(true)
+                        }
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        self.delegate?.showError(.noCamera)
+                        completion(false)
+                    }
+                    print(error)
                 }
-                
-                
-            } catch {
-                // Device does not support reading QR code
-                self.delegate?.showError(.noCamera)
-                print(error)
+            } else {
+                completion(false)
             }
+        })
     }
 }
 
@@ -93,23 +125,33 @@ extension QRScannerManager {
     
     fileprivate func addLayer(for parent: UIViewController) {
         if previewLayer == nil {
-            previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
-            previewLayer?.videoGravity = .resizeAspectFill
+            sessionQueue.sync {
+                let layer = AVCaptureVideoPreviewLayer(session: captureSession)
+                layer.videoGravity = .resizeAspectFill
+                self.previewLayer = layer
+            }
             
             guard let previewLayer = previewLayer else { return }
-            previewLayer.frame = parent.view.bounds
-            
-            parent.view.layer.addSublayer(previewLayer)
+            DispatchQueue.main.async {
+                previewLayer.frame = parent.view.bounds
+                parent.view.layer.addSublayer(previewLayer)
+            }
             
             guard let image = UIImage(named: "viewfinder") else {
                 return
             }
-
+            
             let imageView = UIImageView(image: image)
             imageView.translatesAutoresizingMaskIntoConstraints = false
             focusImageView = imageView
             
-            closeButton = UIButton(type: .close)
+            closeButton = UIButton(type: .system)
+            let xImage = UIImage(systemName: "xmark")
+            
+            closeButton?.setImage(xImage, for: .normal)
+            closeButton?.tintColor = .white
+            closeButton?.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+            closeButton?.layer.cornerRadius = 25
             closeButton?.addTarget(self, action: #selector(close), for: .touchUpInside)
             closeButton?.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -121,9 +163,9 @@ extension QRScannerManager {
     
     private func addViewFinder(parent: UIViewController) {
         guard let imageView = focusImageView else { return }
-
+        
         parent.view.addSubview(imageView)
-
+        
         NSLayoutConstraint.activate([
             imageView.centerYAnchor.constraint(equalTo: parent.view.centerYAnchor),
             imageView.centerXAnchor.constraint(equalTo: parent.view.centerXAnchor),
@@ -136,7 +178,7 @@ extension QRScannerManager {
         parent.view.addSubview(closeButton)
         
         NSLayoutConstraint.activate([
-            closeButton.leftAnchor.constraint(equalTo: parent.view.leftAnchor, constant: 30),
+            closeButton.rightAnchor.constraint(equalTo: parent.view.rightAnchor, constant: -30),
             closeButton.topAnchor.constraint(equalTo: parent.view.topAnchor, constant: 50),
             closeButton.widthAnchor.constraint(equalToConstant: 50),
             closeButton.heightAnchor.constraint(equalToConstant: 50),
@@ -152,23 +194,46 @@ extension QRScannerManager {
         closeButton = nil
     }
     
+    fileprivate func isPresentationAction(url: String) -> Bool {
+        for value in OpenIDPresentationScheme.allCases {
+            if url.starts(with: value.rawValue) {
+                return true
+            }
+        }
+        
+        return false
+    }
+    
+    fileprivate func isIssuanceAction(url: String) -> Bool {
+        for value in CredentialOfferIssuanceScheme.allCases {
+            if url.starts(with: value.rawValue) {
+                return true
+            }
+        }
+        
+        return false
+    }
 }
 
 extension QRScannerManager: AVCaptureMetadataOutputObjectsDelegate {
     
     nonisolated public func metadataOutput(_ output: AVCaptureMetadataOutput,
-                        didOutput metadataObjects: [AVMetadataObject],
-                        from connection: AVCaptureConnection) {
+                                           didOutput metadataObjects: [AVMetadataObject],
+                                           from connection: AVCaptureConnection) {
         guard let metadataObject = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
-                  metadataObject.type == .qr,
-                  let stringValue = metadataObject.stringValue else { return }
-        AudioServicesPlaySystemSound(SystemSoundID(kSystemSoundID_Vibrate))
+              metadataObject.type == .qr,
+              let stringValue = metadataObject.stringValue else { return }
         
         DispatchQueue.main.async(execute: {
-            self.stopSession()
-            if self.needCallback {
-                self.needCallback = false
-                self.delegate?.showQRCodeResult(result: stringValue)
+            if self.isPresentationAction(url: stringValue) || self.isIssuanceAction(url: stringValue) {
+                self.stopSession()
+                if self.needCallback {
+                    self.needCallback = false
+                    self.delegate?.showQRCodeResult(result: stringValue)
+                }
+            } else {
+                self.stopSession()
+                self.delegate?.showQRInvalid()
             }
         })
     }
@@ -179,8 +244,23 @@ extension QRScannerManager: AVCaptureMetadataOutputObjectsDelegate {
 public protocol QRCodeActionDelegate: NSObject {
     func showError(_ error: ScanningError)
     func showQRCodeResult(result: String)
+    func showQRInvalid()
 }
 public enum ScanningError: Error {
     case noCamera
     case noPermission
+}
+
+
+public enum OpenIDPresentationScheme: String, CaseIterable {
+    case openid4VP = "openid4vp"
+    case openidVP = "openid-vp"
+    case mDocOpenID4VP = "mdoc-openid4vp"
+    case eudiOpenID4VP = "eudi-openid4vp"
+}
+
+public enum CredentialOfferIssuanceScheme: String, CaseIterable {
+    case eudiWallet = "eudi-wallet"
+    case openIDCredentialOffer = "openid-credential-offer"
+    case haipVCI = "haip-vci"
 }

@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+/.build
+.build/
+/Packages
+Package.resolved
+
+# Xcode
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# SwiftPM / Xcode local state
+# (shared schemes under .swiftpm/xcode/xcshareddata are intentionally kept)
+.swiftpm/configuration/
+.swiftpm/xcode/package.xcworkspace/

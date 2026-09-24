@@ -8,7 +8,7 @@ import PackageDescription
 let package = Package(
     name: "QRCodeScannerPackage",
     platforms: [
-        .iOS(.v14)
+        .iOS(.v15)
     ],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
